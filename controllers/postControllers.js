@@ -1,59 +1,76 @@
 // createPost
-
-import { json } from "express";
+import { v2 as cloudinary } from "cloudinary";
+// ✅ removed unused `import { json } from "express"`
 import Post from "../models/Post.js";
 import mongoose from "mongoose";
 
+cloudinary.config({
+  cloud_name: process.env.CLOUD_NAME,
+  api_key: process.env.CLOUD_API_KEY,
+  api_secret: process.env.CLOUD_API_SECRET,
+});
 
 const createPost = async (req, res) => {
   try {
-    const { title, content, image, isPublic } = req.body;
-    const newPost = new Post({
+    const { title, content, isPublic } = req.body;
+
+    let imageUrl = null;
+
+    if (req.file) {
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "blog-posts" },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        );
+        stream.end(req.file.buffer);
+      });
+      imageUrl = result.secure_url;
+    }
+
+    const post = await Post.create({
       title,
-      image,
       content,
       isPublic,
-      author: req.user._id || req.user.id,
+      image: imageUrl,
+      author: req.user.id,
     });
-    const savedPost = await newPost.save();
-    res.status(201).json(savedPost);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+
+    res.status(201).json(post);
+  } catch (err) {
+    console.error("CREATE POST ERROR:", err); // ✅ log full error, not just message
+    res.status(500).json({ message: err.message });
   }
 };
 
-// get all posts
-
-
 const getAllPosts = async (req, res) => {
-      try {
-     console.log("REQ.USER 👉", req.user);
-     const userId = req.user?.id;
+  try {
+    console.log("REQ.USER 👉", req.user);
+    const userId = req.user?.id;
 
     const posts = await Post.find({
       $or: [
         { isPublic: true },
-        { author: new mongoose.Types.ObjectId(userId) } // 🔥 KEY FIX
-      ]
+        { author: new mongoose.Types.ObjectId(userId) },
+      ],
     })
       .populate("author", "name email")
       .sort({ createdAt: -1 });
-      res.status(200).json(posts);
+    res.status(200).json(posts);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// get single post
 const getSinglePost = async (req, res) => {
   try {
-    const post = await Post.findByIdAndUpdate(req.params.id,
-      {$inc :{views:1}},
-      {new:true}
-    ).populate(
-      "author",
-      "name email",
-    );
+    const post = await Post.findByIdAndUpdate(
+      req.params.id,
+      { $inc: { views: 1 } },
+      { new: true }
+    ).populate("author", "name email");
 
     if (!post) {
       return res.status(404).json({ message: "Post not Found !" });
@@ -63,8 +80,6 @@ const getSinglePost = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-
-// delete single post
 
 const deletePost = async (req, res) => {
   try {
@@ -80,64 +95,56 @@ const deletePost = async (req, res) => {
   }
 };
 
-//editpost
- const editPost =async(req,res)=>{
-  const {id}=req.params
-  const {title,content,image,isPublic}= req.body;
+const editPost = async (req, res) => {
+  const { id } = req.params;
+  const { title, content, image, isPublic } = req.body;
   try {
-    
-    const editPost = await Post.findById(id)
-    if(!editPost){
-      return res.status(401).json({message:"edit post not found"})
+    const editPost = await Post.findById(id);
+    if (!editPost) {
+      return res.status(401).json({ message: "edit post not found" });
     }
 
-    editPost.title=title||editPost.title
-    editPost.image=image||editPost.image
-    editPost.content=content||editPost.content
-    editPost.isPublic = 
-  isPublic !== undefined ? isPublic : editPost.isPublic;
+    editPost.title = title || editPost.title;
+    editPost.image = image || editPost.image;
+    editPost.content = content || editPost.content;
+    editPost.isPublic = isPublic !== undefined ? isPublic : editPost.isPublic;
 
-    const savedPost = await editPost.save()
-    res.status(200).json("post is edited !")
-    
+    await editPost.save();
+    res.status(200).json("post is edited !");
   } catch (error) {
-    console.log("Edit error",error)
+    console.log("Edit error", error);
+    res.status(500).json({ message: error.message }); // ✅ added missing response
   }
- }
+};
 
-// toggleLike
-const toggleLike =async(req,res)=>{
-  const {id} = req.params
-  const userId = req.user.id
+const toggleLike = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
   try {
-    const post= await Post.findById(id);
-    console.log(post)
+    const post = await Post.findById(id);
 
-
-    if(!post){
-      return res.status(501).json("post not found")
+    if (!post) {
+      return res.status(404).json({ message: "post not found" }); // ✅ 404, not 501
     }
-    const alreadyLiked = post.likes.some(
-      (uid) => uid.toString() === userId
-    );
 
-    if(alreadyLiked){
-        post.likes = post.likes.filter((uId)=>
-        uId.toString()!== userId)
-    }else{
-      post.likes.push(userId)
+    const alreadyLiked = post.likes.some((uid) => uid.toString() === userId);
+
+    if (alreadyLiked) {
+      post.likes = post.likes.filter((uId) => uId.toString() !== userId);
+    } else {
+      post.likes.push(userId);
     }
-    await post.save()
-    
-     res.status(201).json({
+
+    await post.save();
+
+    res.status(200).json({
       message: "Like toggled successfully",
       likes: post.likes.map((like) => like.toString()),
     });
-
   } catch (error) {
-    console.log("Like toggle error")
+    console.log("Like toggle error", error);
+    res.status(500).json({ message: error.message }); // ✅ added missing response
   }
-}
+};
 
-export { createPost, deletePost, getAllPosts, getSinglePost,editPost,toggleLike };
-
+export { createPost, deletePost, getAllPosts, getSinglePost, editPost, toggleLike };
